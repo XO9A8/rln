@@ -116,8 +116,8 @@ This roadmap builds upon the integration plan, layering in architectural milesto
 *Focus: Data acquisition and local persistence.*
 
 - **Milestone 1.1: Environment & Storage Prep**
-    - [ ] Initialize the project and `rusqlite` database schema.
-    - [ ] Implement CRUD operations for network snapshots (storing MAC, IP, Service Names).
+    - [x] Initialize the project and `rusqlite` database schema.
+    - [x] Implement CRUD operations for network snapshots (storing MAC, IP, Service Names).
 - **Milestone 1.2: Layer 2 & Layer 3 Scanning**
     - [ ] Integrate `pnet` and `async-arp`. Implement custom privilege escalation checks (prompting the user gracefully if sudo or `CAP_NET_RAW` is missing).
     - [ ] Integrate `simple-mdns` for concurrent service discovery.
