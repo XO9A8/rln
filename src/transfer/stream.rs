@@ -1,25 +1,49 @@
+//! Iroh QUIC-based P2P streaming layer for RLN.
+//!
+//! This module provides two primary operations:
+//! - **Receiving**: [`P2pNode::listen_for_peers`] accepts incoming QUIC connections,
+//!   authenticates the remote peer via Ed25519, receives chunked files, and verifies
+//!   the SHA-256 digest supplied by the sender.
+//! - **Sending**: [`P2pNode::send_file`] connects to a peer, chunks a local file,
+//!   hashes it incrementally, and transmits the final digest for receiver verification.
+//!
+//! ## Wire Protocol
+//! ```text
+//! Client → Server:
+//!   [u32 big-endian] filename_length
+//!   [u8; filename_length] filename_utf8
+//!   [u64 big-endian] file_size_bytes
+//!   [u8; file_size] file_data (chunked, 64 KB at a time)
+//!   [u8; 64] sha256_hex_digest  (lowercase ASCII)
+//! ```
 #![allow(deprecated)]
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use iroh::base::key::SecretKey;
 use iroh::net::{endpoint::get_remote_node_id, Endpoint};
 use std::sync::Arc;
 
-/// A custom ALPN (Application-Layer Protocol Negotiation) for RLN.
-/// This ensures our P2P nodes only accept traffic meant for this specific application.
+/// The ALPN identifier for the RLN protocol.
+/// Only peers advertising this identifier will be accepted.
 pub const RLN_ALPN: &[u8] = b"rln/v2.0";
 
+/// The P2P networking node backed by Iroh's QUIC endpoint.
 pub struct P2pNode {
+    /// The underlying Iroh endpoint. Exposed publicly so tests and advanced
+    /// callers can query the local node ID or create connections directly.
     pub endpoint: Endpoint,
 }
 
 impl P2pNode {
-    /// Initializes the Iroh MagicEndpoint using our previously generated Ed25519 secret key.
+    /// Initializes an Iroh `Endpoint` using a pre-existing Ed25519 secret key.
+    ///
+    /// The endpoint listens on a random OS-assigned UDP port and uses the
+    /// [`RLN_ALPN`] identifier for connection filtering.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying QUIC socket cannot be bound.
     pub async fn new(secret_key_bytes: &[u8; 32]) -> Result<Self> {
-        // Convert our raw 32-byte secret into Iroh's native key format
         let secret_key = SecretKey::from_bytes(secret_key_bytes);
 
-        // Build the Iroh Endpoint
-        // We bind to an IPv4/IPv6 wildcard port. Iroh handles the NAT traversal.
         let endpoint = Endpoint::builder()
             .secret_key(secret_key)
             .alpns(vec![RLN_ALPN.to_vec()])
@@ -30,46 +54,283 @@ impl P2pNode {
         Ok(Self { endpoint })
     }
 
-    /// Starts a background loop to listen for incoming, authenticated RLN connections.
-    pub async fn listen_for_peers(self: Arc<Self>) -> Result<()> {
+    /// Accepts incoming QUIC connections in a loop and spawns a handler task per peer.
+    ///
+    /// Each accepted connection goes through Iroh's mutual Ed25519 authentication
+    /// before the stream reading begins. Progress events are forwarded to the TUI
+    /// via the supplied `tx` channel.
+    ///
+    /// This function runs indefinitely and should be spawned as a background task.
+    ///
+    /// # Errors
+    /// Returns `Ok(())` when the endpoint is closed gracefully.
+    pub async fn listen_for_peers(
+        self: Arc<Self>,
+        tx: tokio::sync::mpsc::Sender<crate::tui::event::AppEvent>,
+    ) -> Result<()> {
         let node_id = self.endpoint.node_id();
-        println!("🚀 [P2P] Node online. Listening for incoming QUIC connections...");
-        println!(
-            "📡 [P2P] Share this Node ID with peers to connect: {}",
-            node_id
-        );
+        let _ = tx
+            .send(crate::tui::event::AppEvent::Log(format!(
+                "🚀 [P2P] Node online. ID: {}",
+                node_id
+            )))
+            .await;
 
-        // This is the main connection acceptance loop
         while let Some(incoming) = self.endpoint.accept().await {
             let connecting = match incoming.accept() {
                 Ok(conn) => conn,
                 Err(e) => {
-                    eprintln!("⚠️ [P2P] Rejected incoming connection: {}", e);
+                    let _ = tx
+                        .send(crate::tui::event::AppEvent::Log(format!(
+                            "⚠️ [P2P] Rejected connection: {}",
+                            e
+                        )))
+                        .await;
                     continue;
                 }
             };
 
-            // Spawn a new task to handle the individual connection securely
+            let tx_clone = tx.clone();
             tokio::spawn(async move {
-                match connecting.await {
-                    Ok(connection) => {
-                        // Because of Iroh's architecture, the connection is already mutually authenticated
-                        // via Ed25519 signatures at this point!
-                        let peer_id = get_remote_node_id(&connection).expect("Peer should have an ID");
-                        println!(
-                            "🤝 [P2P] Secure connection established with Peer: {}",
-                            peer_id
-                        );
-
-                        // In Phase 4, we will accept bidirectional streams here to transfer files.
-                    }
-                    Err(e) => {
-                        eprintln!("❌ [P2P] Handshake failed: {}", e);
-                    }
+                if let Err(e) = handle_incoming_connection(connecting, tx_clone).await {
+                    eprintln!("❌ [P2P] Connection handler error: {}", e);
                 }
             });
         }
 
         Ok(())
     }
+
+    /// Connects to a remote peer and sends a file using the RLN wire protocol.
+    ///
+    /// The file is read in 64 KB chunks, hashed incrementally, and the final
+    /// SHA-256 hex digest is appended to the stream for the receiver to verify.
+    /// Transfer progress is emitted to the TUI via the `tx` channel.
+    ///
+    /// # Errors
+    /// Returns an error if the connection, file open, or any stream write fails.
+    pub async fn send_file(
+        self: Arc<Self>,
+        peer_id: iroh::net::NodeId,
+        file_path: &std::path::Path,
+        tx: tokio::sync::mpsc::Sender<crate::tui::event::AppEvent>,
+    ) -> Result<()> {
+        use crate::app::TransferState;
+        use crate::transfer::hash::HashVerification;
+        use std::time::Instant;
+        use tokio::io::AsyncReadExt;
+
+        // Validate file_path has a usable filename before connecting
+        let filename = file_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .context("file_path does not have a valid filename component")?
+            .to_string();
+
+        let connection = self
+            .endpoint
+            .connect(peer_id, RLN_ALPN)
+            .await
+            .context("Failed to connect to peer")?;
+
+        let (mut send_stream, _recv_stream) = connection
+            .open_bi()
+            .await
+            .context("Failed to open bidirectional stream")?;
+
+        let mut file = tokio::fs::File::open(file_path).await?;
+        let file_size = file.metadata().await?.len();
+        if file_size == 0 {
+            bail!("Cannot transfer an empty file: {}", filename);
+        }
+        let peer_id_str = peer_id.to_string();
+
+        // --- Wire protocol: header ---
+        let filename_bytes = filename.as_bytes();
+        send_stream
+            .write_all(&(filename_bytes.len() as u32).to_be_bytes())
+            .await?;
+        send_stream.write_all(filename_bytes).await?;
+        send_stream.write_all(&file_size.to_be_bytes()).await?;
+
+        // --- Wire protocol: file chunks ---
+        let mut hasher = HashVerification::new();
+        let mut buffer = [0u8; 65_536]; // 64 KB
+        let mut sent_bytes = 0u64;
+        let start_time = Instant::now();
+        let mut last_ui_update = Instant::now();
+
+        loop {
+            let n = file.read(&mut buffer).await?;
+            if n == 0 {
+                break; // EOF
+            }
+
+            hasher.update(&buffer[..n]);
+            send_stream.write_all(&buffer[..n]).await?;
+            sent_bytes += n as u64;
+
+            // Throttle TUI updates to ~4 Hz to avoid channel flooding
+            if last_ui_update.elapsed().as_millis() > 250 {
+                let elapsed = start_time.elapsed().as_secs_f64();
+                let speed_mbps = (sent_bytes as f64 * 8.0) / (elapsed * 1_000_000.0).max(1.0);
+                let progress_pct = ((sent_bytes as f64 / file_size as f64) * 100.0) as u8;
+
+                let _ = tx
+                    .send(crate::tui::event::AppEvent::TransferProgress(
+                        TransferState {
+                            filename: filename.clone(),
+                            peer_id: peer_id_str.clone(),
+                            progress_pct,
+                            speed_mbps,
+                        },
+                    ))
+                    .await;
+                last_ui_update = Instant::now();
+            }
+        }
+
+        // --- Wire protocol: trailing hash ---
+        let final_hash = hasher.finalize();
+        send_stream.write_all(final_hash.as_bytes()).await?;
+        send_stream.finish()?;
+
+        let _ = tx
+            .send(crate::tui::event::AppEvent::Log(format!(
+                "✅ [P2P] Sent {} → {}  sha256: {}",
+                filename, peer_id_str, final_hash
+            )))
+            .await;
+
+        Ok(())
+    }
+}
+
+/// Handles a single authenticated incoming connection: reads the file stream
+/// frame-by-frame, hashes the payload, and verifies the sender's digest.
+async fn handle_incoming_connection(
+    connecting: iroh::net::endpoint::Connecting,
+    tx: tokio::sync::mpsc::Sender<crate::tui::event::AppEvent>,
+) -> Result<()> {
+    use crate::app::TransferState;
+    use crate::transfer::hash::HashVerification;
+    use std::time::Instant;
+
+    let connection = connecting.await.context("Incoming connection failed")?;
+
+    let peer_id = get_remote_node_id(&connection)
+        .context("Failed to determine remote peer ID")?;
+    let peer_id_str = peer_id.to_string();
+
+    let _ = tx
+        .send(crate::tui::event::AppEvent::Log(format!(
+            "🤝 [P2P] Authenticated connection from: {}",
+            peer_id_str
+        )))
+        .await;
+
+    let (_send_stream, mut recv_stream) = connection
+        .accept_bi()
+        .await
+        .context("Failed to accept bidirectional stream")?;
+
+    // --- Read header ---
+    let mut len_buf = [0u8; 4];
+    recv_stream.read_exact(&mut len_buf).await?;
+    let filename_len = u32::from_be_bytes(len_buf) as usize;
+
+    if filename_len == 0 || filename_len > 4096 {
+        bail!("Received invalid filename length: {}", filename_len);
+    }
+
+    let mut filename_buf = vec![0u8; filename_len];
+    recv_stream.read_exact(&mut filename_buf).await?;
+    let filename = String::from_utf8(filename_buf).context("Filename is not valid UTF-8")?;
+
+    let mut size_buf = [0u8; 8];
+    recv_stream.read_exact(&mut size_buf).await?;
+    let file_size = u64::from_be_bytes(size_buf);
+
+    if file_size == 0 {
+        bail!("Peer sent zero-length file: {}", filename);
+    }
+
+    // --- Read file chunks ---
+    let mut hasher = HashVerification::new();
+    let mut received_bytes = 0u64;
+    let mut buffer = [0u8; 65_536];
+    let start_time = Instant::now();
+    let mut last_ui_update = Instant::now();
+
+    while received_bytes < file_size {
+        let to_read =
+            std::cmp::min(buffer.len() as u64, file_size - received_bytes) as usize;
+
+        match recv_stream.read_exact(&mut buffer[..to_read]).await {
+            Ok(_) => {
+                hasher.update(&buffer[..to_read]);
+                received_bytes += to_read as u64;
+
+                if last_ui_update.elapsed().as_millis() > 250 {
+                    let elapsed = start_time.elapsed().as_secs_f64();
+                    let speed_mbps =
+                        (received_bytes as f64 * 8.0) / (elapsed * 1_000_000.0).max(1.0);
+                    let progress_pct =
+                        ((received_bytes as f64 / file_size as f64) * 100.0) as u8;
+
+                    let _ = tx
+                        .send(crate::tui::event::AppEvent::TransferProgress(
+                            TransferState {
+                                filename: filename.clone(),
+                                peer_id: peer_id_str.clone(),
+                                progress_pct,
+                                speed_mbps,
+                            },
+                        ))
+                        .await;
+                    last_ui_update = Instant::now();
+                }
+            }
+            Err(e) => {
+                bail!("Stream read error while receiving {}: {}", filename, e);
+            }
+        }
+    }
+
+    // --- Verify hash ---
+    let mut expected_hash_buf = [0u8; 64];
+    recv_stream.read_exact(&mut expected_hash_buf).await?;
+    let expected_hash =
+        String::from_utf8(expected_hash_buf.to_vec()).context("Hash is not valid UTF-8")?;
+    let computed_hash = hasher.finalize();
+
+    if expected_hash == computed_hash {
+        let _ = tx
+            .send(crate::tui::event::AppEvent::Log(format!(
+                "✅ [P2P] Verified '{}'  sha256: {}",
+                filename, computed_hash
+            )))
+            .await;
+    } else {
+        let _ = tx
+            .send(crate::tui::event::AppEvent::Log(format!(
+                "❌ [P2P] Hash mismatch for '{}'! Expected: {} | Got: {}",
+                filename, expected_hash, computed_hash
+            )))
+            .await;
+    }
+
+    // Signal 100% completion
+    let _ = tx
+        .send(crate::tui::event::AppEvent::TransferProgress(
+            TransferState {
+                filename: filename.clone(),
+                peer_id: peer_id_str.clone(),
+                progress_pct: 100,
+                speed_mbps: 0.0,
+            },
+        ))
+        .await;
+
+    Ok(())
 }

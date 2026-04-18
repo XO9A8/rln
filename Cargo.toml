@@ -30,6 +30,7 @@ rand = "0.8"
 # P2P & Transfer
 iroh = "0.28"
 bytes = "1.5"
+sha2 = "0.10"
 
 # AI Inference
 # ort = "1.14" # Uncomment for performance (requires ONNX runtime)

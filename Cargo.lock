@@ -2883,6 +2883,7 @@ dependencies = [
  "rand 0.8.6",
  "ratatui",
  "rusqlite",
+ "sha2",
  "simple-mdns",
  "surge-ping",
  "tokio",

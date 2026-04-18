@@ -14,6 +14,8 @@ pub enum AppEvent {
     NetworkUpdate(Vec<DriftEvent>),
     /// P2P streaming logs or events.
     Log(String),
+    /// File transfer progress update.
+    TransferProgress(crate::app::TransferState),
 }
 
 /// Sets up a background thread that listens for terminal keystrokes

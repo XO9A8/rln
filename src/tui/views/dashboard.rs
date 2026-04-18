@@ -1,4 +1,14 @@
+//! Dashboard view for the RLN TUI.
+//!
+//! Renders a four-pane layout:
+//! ```text
+//! ┌────────────────────── Header ───────────────────────┐
+//! │─────────────── Network Topology (LLDP) ─────────────│
+//! │──────────────── Active P2P Transfers ───────────────│
+//! └───────────────────── System Logs ───────────────────┘
+//! ```
 use crate::app::App;
+use crate::storage::drift::DriftEvent;
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
@@ -7,91 +17,212 @@ use ratatui::{
     Frame,
 };
 
-/// Renders the main dashboard UI based on the current App state
+/// Renders the complete dashboard UI for the current [`App`] state.
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // Header
-            Constraint::Min(8),     // Network Topology
-            Constraint::Length(6),  // Active Transfers
-            Constraint::Length(8),  // Logs
+            Constraint::Length(3), // Header bar
+            Constraint::Min(8),    // Network Topology
+            Constraint::Length(6), // Active Transfers
+            Constraint::Length(8), // System Logs
         ])
         .split(f.area());
 
-    // 1. Header
+    draw_header(f, app, chunks[0]);
+    draw_topology(f, app, chunks[1]);
+    draw_transfers(f, app, chunks[2]);
+    draw_logs(f, app, chunks[3]);
+}
+
+/// Renders the top header bar with device count and status.
+fn draw_header(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let status = if app.is_running { "Active" } else { "Stopping" };
     let header_text = format!(
-        " 🛰️  RLN v2.0 Dashboard | Known Devices: {} | Status: Active",
-        app.known_devices
+        " 🛰️  RLN v2.0  |  Known Devices: {}  |  Status: {}",
+        app.known_devices, status
     );
     let header = Paragraph::new(header_text)
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
         .block(Block::default().borders(Borders::ALL).title(" RLN Orchestrator "));
-    f.render_widget(header, chunks[0]);
+    f.render_widget(header, area);
+}
 
-    // 2. Topology
-    let mut topo_items = Vec::new();
+/// Renders the LLDP network topology panel, grouping devices under their parent switch.
+/// Also appends any active drift alerts below the topology tree.
+fn draw_topology(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let mut items: Vec<ListItem> = Vec::new();
+
     if app.topology.is_empty() {
-        topo_items.push(ListItem::new("Scanning LLDP Topology..."));
+        items.push(ListItem::new(Span::styled(
+            "  Scanning LLDP topology...",
+            Style::default().fg(Color::DarkGray),
+        )));
     } else {
         for (switch_name, topo) in &app.topology {
-            topo_items.push(ListItem::new(Line::from(vec![
-                Span::styled("🔌 Switch: ", Style::default().fg(Color::Blue)),
-                Span::styled(format!("{} ", switch_name), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-                Span::styled(format!("(Port: {})", topo.port_id), Style::default().fg(Color::DarkGray)),
+            // Switch header row
+            items.push(ListItem::new(Line::from(vec![
+                Span::styled("🔌 ", Style::default().fg(Color::Blue)),
+                Span::styled(
+                    switch_name.clone(),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("  ·  Port: {}", topo.port_id),
+                    Style::default().fg(Color::DarkGray),
+                ),
             ])));
-            for device in &topo.devices {
-                topo_items.push(ListItem::new(Line::from(format!(
-                    "  ├─ {} ({}) - {}",
-                    device.hostname.as_deref().unwrap_or("Unknown"),
-                    device.ip_address,
-                    device.mac_address,
-                ))));
+
+            // Device rows under this switch
+            let last_idx = topo.devices.len().saturating_sub(1);
+            for (i, device) in topo.devices.iter().enumerate() {
+                let prefix = if i == last_idx { "  └─ " } else { "  ├─ " };
+                let hostname = device.hostname.as_deref().unwrap_or("Unknown");
+                items.push(ListItem::new(Line::from(vec![
+                    Span::styled(prefix, Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        format!("{} ", hostname),
+                        Style::default().fg(Color::Green),
+                    ),
+                    Span::styled(
+                        format!("({})  ", device.ip_address),
+                        Style::default().fg(Color::Cyan),
+                    ),
+                    Span::styled(
+                        device.mac_address.clone(),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ])));
             }
         }
     }
-    
-    // Also include Drift Events quickly if there are any
+
+    // Drift Alert section
     if !app.active_drift_events.is_empty() {
-        topo_items.push(ListItem::new(""));
-        topo_items.push(ListItem::new(Line::from(Span::styled("Drift Alerts:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)))));
+        items.push(ListItem::new(""));
+        items.push(ListItem::new(Span::styled(
+            "  ⚠  Drift Alerts",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )));
         for event in &app.active_drift_events {
-            let log_str = format!("{:?}", event); // Keep it simple for now
-            topo_items.push(ListItem::new(format!("  ! {}", log_str)));
+            let (icon, text, color) = format_drift_event(event);
+            items.push(ListItem::new(Line::from(vec![
+                Span::styled(format!("    {} ", icon), Style::default().fg(color)),
+                Span::styled(text, Style::default().fg(Color::White)),
+            ])));
         }
     }
 
-    let topo_list = List::new(topo_items).block(
-        Block::default().borders(Borders::ALL).title(" Network Topology (LLDP) ")
-    );
-    f.render_widget(topo_list, chunks[1]);
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(" Network Topology (LLDP) "));
+    f.render_widget(list, area);
+}
 
-    // 3. Active Transfers
-    let mut transfer_items = Vec::new();
+/// Formats a [`DriftEvent`] into a human-readable (icon, text, color) tuple.
+fn format_drift_event(event: &DriftEvent) -> (&'static str, String, Color) {
+    match event {
+        DriftEvent::NewDevice { mac, ip } => (
+            "NEW",
+            format!("{} @ {}", mac, ip),
+            Color::Green,
+        ),
+        DriftEvent::IpChanged { mac, old_ip, new_ip } => (
+            "CHG",
+            format!("{}: {} → {}", mac, old_ip, new_ip),
+            Color::Yellow,
+        ),
+        DriftEvent::DeviceOffline { mac, last_ip } => (
+            "OFF",
+            format!("{} (last seen @ {})", mac, last_ip),
+            Color::Red,
+        ),
+        DriftEvent::NoChange { mac } => (
+            "OK ",
+            format!("{} — stable", mac),
+            Color::DarkGray,
+        ),
+    }
+}
+
+/// Renders the active P2P transfers panel with progress and speed.
+fn draw_transfers(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let mut items: Vec<ListItem> = Vec::new();
+
     if app.active_transfers.is_empty() {
-        transfer_items.push(ListItem::new("No active transfers."));
+        items.push(ListItem::new(Span::styled(
+            "  No active transfers.",
+            Style::default().fg(Color::DarkGray),
+        )));
     } else {
         for t in &app.active_transfers {
+            // Build a simple ASCII progress bar (20 chars wide)
+            let filled = (t.progress_pct as usize * 20) / 100;
+            let bar: String = format!(
+                "[{}{}]",
+                "█".repeat(filled),
+                "░".repeat(20 - filled)
+            );
+
             let line = Line::from(vec![
                 Span::styled("📦 ", Style::default()),
-                Span::styled(format!("{} ", t.filename), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-                Span::styled(format!("-> {} ", t.peer_id), Style::default().fg(Color::Gray)),
-                Span::styled(format!("[{}%] ", t.progress_pct), Style::default().fg(Color::Cyan)),
-                Span::styled(format!("({:.1} MB/s)", t.speed_mbps), Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("{:<30}", &t.filename),
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" {} {}%  ", bar, t.progress_pct),
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::styled(
+                    format!("{:.1} Mb/s", t.speed_mbps),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    format!("  → {}", t.peer_id),
+                    Style::default().fg(Color::DarkGray),
+                ),
             ]);
-            transfer_items.push(ListItem::new(line));
+            items.push(ListItem::new(line));
         }
     }
-    
-    let transfers_list = List::new(transfer_items).block(
-        Block::default().borders(Borders::ALL).title(" Active P2P Transfers ")
-    );
-    f.render_widget(transfers_list, chunks[2]);
 
-    // 4. Logs
-    let log_items: Vec<ListItem> = app.logs.iter().map(|log| ListItem::new(log.clone())).collect();
-    let logs_list = List::new(log_items).block(
-        Block::default().borders(Borders::ALL).title(" System Logs ")
-    );
-    f.render_widget(logs_list, chunks[3]);
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(" Active P2P Transfers "));
+    f.render_widget(list, area);
+}
+
+/// Renders the system log panel showing the most recent buffered log messages.
+fn draw_logs(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    // Show newest logs at the bottom by reversing the deque iterator
+    let items: Vec<ListItem> = app
+        .logs
+        .iter()
+        .rev()
+        .map(|msg| {
+            let color = if msg.contains("[ERROR]") || msg.contains("❌") {
+                Color::Red
+            } else if msg.contains("[WARNING]") || msg.contains("[DEGRADED]") || msg.contains("⚠") {
+                Color::Yellow
+            } else if msg.contains("✅") || msg.contains("[NETWORK]") {
+                Color::Green
+            } else {
+                Color::White
+            };
+            ListItem::new(Span::styled(msg.clone(), Style::default().fg(color)))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(" System Logs (newest first) "));
+    f.render_widget(list, area);
 }

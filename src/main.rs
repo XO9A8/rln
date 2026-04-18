@@ -8,6 +8,7 @@ use lan_asin::discovery::{l2_scanner, mdns_scanner};
 use lan_asin::identity::keys::NodeIdentity;
 use lan_asin::storage::db::Database;
 use lan_asin::storage::drift::calculate_drift;
+use lan_asin::system::privileges;
 use lan_asin::transfer::stream::P2pNode;
 use lan_asin::tui::{
     event::{setup_key_listener, AppEvent},
@@ -26,15 +27,20 @@ async fn main() -> Result<()> {
     let identity = NodeIdentity::load_or_generate("data/identity.key")?;
     let p2p_node = Arc::new(P2pNode::new(&identity.secret_bytes()).await?);
 
+    // 3. Setup Event Channels
+    let (tx, mut rx) = mpsc::channel(100);
+    setup_key_listener(tx.clone(), Duration::from_millis(250));
+
     // Spawn P2P Listener
     tokio::spawn({
         let node = Arc::clone(&p2p_node);
+        let tx_p2p = tx.clone();
         async move {
-            let _ = node.listen_for_peers().await;
+            let _ = node.listen_for_peers(tx_p2p).await;
         }
     });
 
-    // 3. Initialize UI & State
+    // 4. Initialize UI & State
     let mut terminal = setup_terminal()?;
     let mut app = App::new(known_devices);
     app.add_log(format!("[ID] Peer ID: {}", identity.peer_id_hex()));
@@ -56,17 +62,12 @@ async fn main() -> Result<()> {
         speed_mbps: 45.2,
     });
 
-    // 4. Setup Event Channels
-    let (tx, mut rx) = mpsc::channel(100);
-    setup_key_listener(tx.clone(), Duration::from_millis(250));
-
     // 5. Spawn Background Discovery Engine
-    let iface = l2_scanner::get_active_interface()?;
-    if l2_scanner::verify_privileges(&iface).is_ok() {
-        app.add_log("[SYSTEM] Raw socket permissions granted. Starting scanners...".into());
+    if privileges::is_privileged() {
+        app.add_log("[SYSTEM] CAP_NET_RAW granted. Starting full L2+L3+ICMP discovery...".into());
+        let iface = l2_scanner::get_active_interface()?;
         let tx_net = tx.clone();
 
-        // Background loop that scans every 10 seconds
         tokio::spawn(async move {
             loop {
                 let arp_task = tokio::spawn({
@@ -80,7 +81,6 @@ async fn main() -> Result<()> {
 
                 if let (Ok(Ok(mut arp)), Ok(Ok(mut mdns))) = (arp_res, mdns_res) {
                     arp.append(&mut mdns);
-                    // We need a fresh DB connection here since this is a background thread
                     if let Ok(bg_db) = Database::new("data/rln_state.db") {
                         if let Ok(history) = bg_db.get_all_snapshots() {
                             let drift = calculate_drift(&history, &arp);
@@ -92,7 +92,27 @@ async fn main() -> Result<()> {
             }
         });
     } else {
-        app.add_log("[WARNING] Missing privileges for raw L2 scanning.".into());
+        // Print the guide to stderr before the TUI takes over
+        privileges::print_privilege_guide();
+
+        app.add_log("[DEGRADED] No CAP_NET_RAW — L2 ARP disabled. Using mDNS-only mode.".into());
+        app.add_log("[DEGRADED] Run: sudo setcap cap_net_raw=eip $(which lan-asin)".into());
+
+        // Still run mDNS in degraded mode
+        let tx_mdns = tx.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Ok(mdns_devices) = mdns_scanner::run_mdns_scan().await {
+                    if let Ok(bg_db) = Database::new("data/rln_state.db") {
+                        if let Ok(history) = bg_db.get_all_snapshots() {
+                            let drift = calculate_drift(&history, &mdns_devices);
+                            let _ = tx_mdns.send(AppEvent::NetworkUpdate(drift)).await;
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(30)).await;
+            }
+        });
     }
 
     // 6. Main Application Loop
@@ -115,6 +135,13 @@ async fn main() -> Result<()> {
                 }
                 AppEvent::Log(msg) => {
                     app.add_log(msg);
+                }
+                AppEvent::TransferProgress(state) => {
+                    // Overwrite the existing progress for this peer/file or add new
+                    app.active_transfers.retain(|t| t.peer_id != state.peer_id || t.filename != state.filename);
+                    if state.progress_pct < 100 {
+                        app.active_transfers.push(state);
+                    }
                 }
                 AppEvent::Tick => {} // We just let the loop continue to redraw
             }

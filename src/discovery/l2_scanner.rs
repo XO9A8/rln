@@ -17,19 +17,21 @@ pub fn get_active_interface() -> Result<NetworkInterface> {
 
 /// Checks if the application has raw socket permissions (root / CAP_NET_RAW).
 pub fn verify_privileges(iface: &NetworkInterface) -> Result<()> {
-    // Attempt to open a dummy raw channel to test permissions
     let channel_config = datalink::Config::default();
     match datalink::channel(iface, channel_config) {
         Ok(_) => Ok(()),
         Err(e) => {
             if e.kind() == std::io::ErrorKind::PermissionDenied {
-                bail!("Permission Denied: RLN requires root, Administrator, or CAP_NET_RAW privileges to perform Layer 2 ARP/NDP scanning. Please elevate your permissions.");
+                bail!("Permission Denied: RLN requires root, Administrator, or CAP_NET_RAW privileges to perform Layer 2 ARP/NDP scanning.");
             }
             bail!("Failed to open raw socket: {}", e);
         }
     }
 }
 
+/// Performs an ARP sweep across the interface subnet.
+/// This function is only available on Unix-like operating systems.
+#[cfg(unix)]
 pub async fn run_arp_sweep(iface: &NetworkInterface) -> Result<Vec<ScannedDevice>> {
     use async_arp::{Client, ClientConfigBuilder, ClientSpinner, RequestInputBuilder};
     use pnet::util::MacAddr;
@@ -37,7 +39,6 @@ pub async fn run_arp_sweep(iface: &NetworkInterface) -> Result<Vec<ScannedDevice
 
     println!("📡 [L2] Starting ARP sweep on interface: {}", iface.name);
 
-    // Get our IPv4
     let network = iface.ips.iter().find(|ip| ip.is_ipv4());
     let (our_ip, network) = match network {
         Some(pnet::ipnetwork::IpNetwork::V4(net)) => (net.ip(), net),
@@ -49,14 +50,12 @@ pub async fn run_arp_sweep(iface: &NetworkInterface) -> Result<Vec<ScannedDevice
         bail!("Interface does not have a MAC address");
     }
 
-    // Initialize async-arp client
     let config = ClientConfigBuilder::new(&iface.name)
         .with_response_timeout(std::time::Duration::from_millis(500))
         .build();
     let client = Client::new(config)?;
     let spinner = ClientSpinner::new(client).with_retries(1);
 
-    // Iterate over the IPs in the subnet
     let mut requests = Vec::new();
     let net_u32 = u32::from(network.network());
     let mask = network.prefix();
@@ -66,16 +65,15 @@ pub async fn run_arp_sweep(iface: &NetworkInterface) -> Result<Vec<ScannedDevice
         let target_ip = Ipv4Addr::from(net_u32 + i);
         if target_ip == our_ip {
             continue;
-        } // Skip ourselves
+        }
 
-        let req = RequestInputBuilder::new()
+        if let Ok(req) = RequestInputBuilder::new()
             .with_sender_ip(our_ip)
             .with_sender_mac(our_mac)
             .with_target_ip(target_ip)
             .with_target_mac(MacAddr::zero())
-            .build();
-            
-        if let Ok(req) = req {
+            .build()
+        {
             requests.push(req);
         }
     }
@@ -94,4 +92,12 @@ pub async fn run_arp_sweep(iface: &NetworkInterface) -> Result<Vec<ScannedDevice
     }
 
     Ok(devices)
+}
+
+/// Stub for Windows: ARP sweep is not supported without Npcap/WinPcap.
+/// Returns an empty device list and logs a warning.
+#[cfg(target_os = "windows")]
+pub async fn run_arp_sweep(_iface: &NetworkInterface) -> Result<Vec<ScannedDevice>> {
+    eprintln!("[L2] ARP sweep is not supported on Windows without Npcap/WinPcap. Skipping.");
+    Ok(vec![])
 }
