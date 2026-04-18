@@ -453,8 +453,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c673075a2e0e5f4a1dde27ce9dee1ea4558c7ffe648f576438a20ca1d2acc4b0"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link",
 ]
 
@@ -2474,8 +2476,10 @@ checksum = "bf36173d4167ed999940f804952e6b08197cae5ad5d572eb4db150ce8ad5d58f"
 name = "lan-asin"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
  "async-arp",
  "async-trait",
+ "chrono",
  "clap",
  "crossterm",
  "ed25519-dalek 2.2.0",

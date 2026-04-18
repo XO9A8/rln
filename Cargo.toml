@@ -9,6 +9,8 @@ description = "Privacy-first, zero-trust network orchestrator for the modern LAN
 tokio = { version = "^1", features = ["full"] }
 async-trait = "0.1"
 
+# Error Handling & Utilities
+anyhow = "1.0"
 # Networking & Discovery
 pnet = "0.35"
 async-arp = "0.4"
@@ -19,6 +21,7 @@ packet-dissector-lldp = "0.3"
 
 # Storage
 rusqlite = { version = "0.39", features = ["bundled"] }
+chrono = "0.4" # For timestamping snapshots
 
 # Crypto & Identity
 ed25519-dalek = "2.2"
