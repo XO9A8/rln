@@ -1,3 +1,4 @@
+use crate::storage::drift::ScannedDevice;
 use anyhow::{bail, Result};
 use pnet::datalink::{self, NetworkInterface};
 
@@ -30,15 +31,23 @@ pub fn verify_privileges(iface: &NetworkInterface) -> Result<()> {
 }
 
 /// Initiates the asynchronous ARP sweep across the interface's subnet.
-pub async fn run_arp_sweep(iface: &NetworkInterface) -> Result<()> {
-    println!("📡 Starting L2 ARP sweep on interface: {}", iface.name);
-
-    // In a full implementation, you would calculate the /24 or /16 subnet
-    // from iface.ips and use `async-arp` to send requests concurrently.
-    // For now, we simulate finding a device to feed our database.
-
+pub async fn run_arp_sweep(iface: &NetworkInterface) -> Result<Vec<ScannedDevice>> {
+    println!("📡 [L2] Starting ARP sweep on interface: {}", iface.name);
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-    println!("🔍 [L2] Found device: 192.168.1.105 (00:1A:2B:3C:4D:5E)");
 
-    Ok(())
+    // Simulating a couple of discovered devices
+    let devices = vec![
+        ScannedDevice {
+            mac_address: "00:1B:44:11:3A:B7".to_string(),
+            ip_address: "192.168.1.10".to_string(), // Our router from earlier
+            service_name: None,
+        },
+        ScannedDevice {
+            mac_address: "AA:BB:CC:DD:EE:FF".to_string(),
+            ip_address: "192.168.1.105".to_string(), // A brand new device
+            service_name: None,
+        },
+    ];
+
+    Ok(devices)
 }

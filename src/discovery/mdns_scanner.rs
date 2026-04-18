@@ -1,3 +1,4 @@
+use crate::storage::drift::ScannedDevice;
 use anyhow::Result;
 use simple_mdns::async_discovery::ServiceDiscovery;
 use simple_mdns::InstanceInformation;
@@ -23,4 +24,17 @@ pub async fn run_mdns_discovery() -> Result<()> {
         }
     }
     Ok(())
+}
+pub async fn run_mdns_discoveryy() -> Result<Vec<ScannedDevice>> {
+    println!("🌐 [L3] Starting mDNS discovery...");
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    // Simulating a discovered service (e.g., a local printer)
+    let devices = vec![ScannedDevice {
+        mac_address: "11:22:33:44:55:66".to_string(), // In reality, we correlate this from ARP table
+        ip_address: "192.168.1.50".to_string(),
+        service_name: Some("Brother_HL-L2350DW._http._tcp.local".to_string()),
+    }];
+
+    Ok(devices)
 }
