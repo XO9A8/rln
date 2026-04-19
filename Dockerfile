@@ -1,11 +1,10 @@
 # --- Build Stage ---
-FROM rust:1.75-slim-bookworm as builder
+FROM rust:1-slim-bookworm AS builder
 
 # Install build dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
-    sqlite3 \
     libsqlite3-dev \
     && rm -rf /var/lib/apt/lists/*
 
@@ -20,9 +19,9 @@ RUN cargo build --release
 FROM debian:bookworm-slim
 
 # Install runtime dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
-    sqlite3 \
+    libsqlite3-0 \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -31,11 +30,11 @@ RUN mkdir -p /data
 VOLUME /data
 
 # Copy the binary from the builder stage
-COPY --from=builder /usr/src/rln/target/release/rln /usr/local/bin/rln
+COPY --from=builder /usr/src/rln/target/release/lan-asin /usr/local/bin/lan-asin
 
 # Set environment variables
 ENV RLN_DATA_DIR=/data
 
 # Entrypoint
-ENTRYPOINT ["rln"]
+ENTRYPOINT ["lan-asin"]
 CMD ["--dashboard"]

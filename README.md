@@ -43,26 +43,55 @@
   - **Linux**: `CAP_NET_RAW` capabilities or `sudo`.
   - **Windows**: Administrator privileges (Npcap recommended).
 
-### Local Installation
+### Local Installation (macOS, Windows, & Linux)
 
-1. **Clone the repository**:
-   ```bash
-   git clone https://github.com/your-username/rln.git
+Because RLN relies on raw OSI Layer 2 network sockets to sniff low-level ARP and LLDP frames, it must be run natively on macOS and Windows to avoid virtualization limitations.
+
+#### Windows
+1. Install [Npcap](https://npcap.com/) (the modern Windows packet capture library). **Important:** During installation, select **"Install Npcap in WinPcap API-compatible Mode"**.
+2. Open an Administrative terminal (PowerShell or Command Prompt as Admin).
+3. Clone and run natively:
+   ```powershell
+   git clone https://github.com/XO9A8/rln.git
    cd rln
-   ```
-
-2. **Build and Run**:
-   ```bash
    cargo run --release -- --dashboard
    ```
 
-### Running with Docker (Recommended)
+#### macOS
+macOS uses the built-in BSD Packet Filter (`BPF`) for network taps. You just need root permissions to bind raw sockets to interface hardware (like `en0`).
+1. Open your terminal natively.
+2. Clone and run with `sudo` privileges:
+   ```bash
+   git clone https://github.com/XO9A8/rln.git
+   cd rln
+   sudo cargo run --release -- --dashboard
+   ```
 
-RLN is fully containerized with host networking support for seamless LAN scanning.
+#### Linux
+Linux users can run RLN natively or via Docker (see below).
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/XO9A8/rln.git
+   cd rln
+   ```
+2. Run with `sudo` (or grant `CAP_NET_RAW` capabilities to the binary):
+   ```bash
+   sudo cargo run --release -- --dashboard
+   ```
+
+### Running with Docker (Linux Recommended)
+
+RLN is fully containerized with host networking support for seamless LAN scanning. Because RLN is an interactive TUI (Terminal User Interface), it must be run with the `run` command rather than the standard `up` background daemon.
 
 ```bash
-docker-compose up --build
+# 1. Build the container
+sudo docker-compose build
+
+# 2. Run interactively (attaches your terminal to the UI)
+sudo docker-compose run --rm rln
 ```
+
+> ⚠️ **macOS & Windows Docker limitations:** Docker Desktop on macOS and Windows runs containers inside a hidden Linux VM. This VM acts as a NAT firewall that completely blocks the raw Layer 2 network packets (ARP, NDP, LLDP) that RLN needs to see the physical LAN. Because of this, **Docker is only recommended for native Linux hosts.** On Mac and Windows, you should run RLN natively!
 
 ---
 

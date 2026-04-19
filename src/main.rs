@@ -19,12 +19,20 @@ use lan_asin::tui::{
 #[tokio::main]
 async fn main() -> Result<()> {
     // 1. Initial Data Load
-    let db = Database::new("data/rln_state.db")?;
+    let db_path = std::env::var("RLN_DATA_DIR")
+        .map(|d| format!("{}/rln_state.db", d))
+        .unwrap_or_else(|_| "data/rln_state.db".to_string());
+        
+    let db = Database::new(&db_path)?;
     let historical_snapshots = db.get_all_snapshots()?;
     let known_devices = historical_snapshots.len();
 
     // 2. Setup Crypto Identity
-    let identity = NodeIdentity::load_or_generate("data/identity.key")?;
+    let id_path = std::env::var("RLN_DATA_DIR")
+        .map(|d| format!("{}/identity.key", d))
+        .unwrap_or_else(|_| "data/identity.key".to_string());
+        
+    let identity = NodeIdentity::load_or_generate(&id_path)?;
     let p2p_node = Arc::new(P2pNode::new(&identity.secret_bytes()).await?);
 
     // 3. Setup Event Channels
@@ -74,7 +82,11 @@ async fn main() -> Result<()> {
                     
                     let _ = tx_net.send(AppEvent::RlnPeerDiscovered(peers)).await;
                     
-                    if let Ok(bg_db) = Database::new("data/rln_state.db") {
+                    let db_scan_path = std::env::var("RLN_DATA_DIR")
+                        .map(|d| format!("{}/rln_state.db", d))
+                        .unwrap_or_else(|_| "data/rln_state.db".to_string());
+                        
+                    if let Ok(bg_db) = Database::new(&db_scan_path) {
                         if let Ok(history) = bg_db.get_all_snapshots() {
                             let drift = calculate_drift(&history, &arp);
                             let _ = tx_net.send(AppEvent::NetworkUpdate(drift, arp)).await;
@@ -113,7 +125,12 @@ async fn main() -> Result<()> {
             loop {
                 if let Ok((mdns_devices, peers)) = mdns_scanner::run_mdns_scan_step(&mdns_discovery).await {
                     let _ = tx_mdns.send(AppEvent::RlnPeerDiscovered(peers)).await;
-                    if let Ok(bg_db) = Database::new("data/rln_state.db") {
+                    
+                    let db_scan_path = std::env::var("RLN_DATA_DIR")
+                        .map(|d| format!("{}/rln_state.db", d))
+                        .unwrap_or_else(|_| "data/rln_state.db".to_string());
+                        
+                    if let Ok(bg_db) = Database::new(&db_scan_path) {
                         if let Ok(history) = bg_db.get_all_snapshots() {
                             let drift = calculate_drift(&history, &mdns_devices);
                             let _ = tx_mdns.send(AppEvent::NetworkUpdate(drift, mdns_devices)).await;
