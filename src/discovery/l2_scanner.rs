@@ -118,18 +118,19 @@ pub async fn run_arp_sweep(iface: &NetworkInterface) -> Result<Vec<ScannedDevice
         }
     }
 
-    // 2. Resolve final names, falling back to OUI
+    // 2. Resolve final names, combining DNS and OUI
     for task in dns_tasks {
         if let Ok((mac_str, ip_str, dns_name)) = task.await {
-            let mut service_name = dns_name;
+            let oui_name = db.as_ref().and_then(|oui_db| {
+                oui_db.lookup_by_mac(&mac_str).ok().flatten().map(|res| res.company_name.clone())
+            });
 
-            if service_name.is_none() {
-                if let Some(oui_db) = &db {
-                    if let Ok(Some(res)) = oui_db.lookup_by_mac(&mac_str) {
-                        service_name = Some(res.company_name.clone());
-                    }
-                }
-            }
+            let service_name = match (dns_name, oui_name) {
+                (Some(dns), Some(oui)) => Some(format!("{} ({})", dns, oui)),
+                (Some(dns), None) => Some(dns),
+                (None, Some(oui)) => Some(oui),
+                (None, None) => None,
+            };
 
             devices.push(ScannedDevice {
                 mac_address: mac_str,

@@ -43,7 +43,8 @@ async fn main() -> Result<()> {
     // 4. Initialize UI & State
     let mut terminal = setup_terminal()?;
     let mut app = App::new(known_devices);
-    app.add_log(format!("[ID] Peer ID: {}", identity.peer_id_hex()));
+    app.local_peer_id = identity.peer_id_hex();
+    app.add_log(format!("[ID] Peer ID: {}", app.local_peer_id));
 
     // Topologies and transfers will be dynamically updated by network scans and peers
 
@@ -52,6 +53,9 @@ async fn main() -> Result<()> {
         app.add_log("[SYSTEM] CAP_NET_RAW granted. Starting full L2+L3+ICMP discovery...".into());
         let iface = l2_scanner::get_active_interface()?;
         let tx_net = tx.clone();
+        
+        let local_pid = app.local_peer_id.clone();
+        let mdns_discovery = Arc::new(mdns_scanner::setup_mdns(&local_pid)?);
 
         tokio::spawn(async move {
             loop {
@@ -59,13 +63,17 @@ async fn main() -> Result<()> {
                     let iface = iface.clone();
                     async move { l2_scanner::run_arp_sweep(&iface).await }
                 });
-                let mdns_task =
-                    tokio::spawn(async move { mdns_scanner::run_mdns_scan().await });
+                
+                let mdns_disc_clone = mdns_discovery.clone();
+                let mdns_task = tokio::spawn(async move { mdns_scanner::run_mdns_scan_step(&mdns_disc_clone).await });
 
                 let (arp_res, mdns_res) = tokio::join!(arp_task, mdns_task);
 
-                if let (Ok(Ok(mut arp)), Ok(Ok(mut mdns))) = (arp_res, mdns_res) {
+                if let (Ok(Ok(mut arp)), Ok(Ok((mut mdns, peers)))) = (arp_res, mdns_res) {
                     arp.append(&mut mdns);
+                    
+                    let _ = tx_net.send(AppEvent::RlnPeerDiscovered(peers)).await;
+                    
                     if let Ok(bg_db) = Database::new("data/rln_state.db") {
                         if let Ok(history) = bg_db.get_all_snapshots() {
                             let drift = calculate_drift(&history, &arp);
@@ -97,9 +105,14 @@ async fn main() -> Result<()> {
 
         // Still run mDNS in degraded mode
         let tx_mdns = tx.clone();
+        
+        let local_pid = app.local_peer_id.clone();
+        let mdns_discovery = Arc::new(mdns_scanner::setup_mdns(&local_pid)?);
+
         tokio::spawn(async move {
             loop {
-                if let Ok(mdns_devices) = mdns_scanner::run_mdns_scan().await {
+                if let Ok((mdns_devices, peers)) = mdns_scanner::run_mdns_scan_step(&mdns_discovery).await {
+                    let _ = tx_mdns.send(AppEvent::RlnPeerDiscovered(peers)).await;
                     if let Ok(bg_db) = Database::new("data/rln_state.db") {
                         if let Ok(history) = bg_db.get_all_snapshots() {
                             let drift = calculate_drift(&history, &mdns_devices);
@@ -127,7 +140,20 @@ async fn main() -> Result<()> {
                         KeyCode::Char('s') => {
                             app.input_mode = InputMode::SendFile;
                             app.input_buffer.clear();
-                            app.add_log("[SEND] Enter: <peer_id> <filepath>  (Esc to cancel)".into());
+                            app.add_log("[SEND] Enter: <peer_id_or_name> <filepath>  (Esc to cancel)".into());
+                        }
+                        KeyCode::Up => {
+                            app.log_scroll_offset = app.log_scroll_offset.saturating_add(1);
+                        }
+                        KeyCode::Down => {
+                            app.log_scroll_offset = app.log_scroll_offset.saturating_sub(1);
+                        }
+                        KeyCode::PageUp => {
+                            let max_scroll = app.logs.len().saturating_sub(1) as u16;
+                            app.log_scroll_offset = app.log_scroll_offset.saturating_add(5).min(max_scroll);
+                        }
+                        KeyCode::PageDown => {
+                            app.log_scroll_offset = app.log_scroll_offset.saturating_sub(5);
                         }
                         _ => {}
                     },
@@ -152,23 +178,28 @@ async fn main() -> Result<()> {
                             let path_str = parts.next().unwrap_or("").trim().to_string();
 
                             if peer_str.is_empty() || path_str.is_empty() {
-                                app.add_log("❌ [SEND] Usage: <peer_id> <filepath>".into());
+                                app.add_log("[ERROR] [SEND] Usage: <peer_id_or_name> <filepath>".into());
                             } else {
-                                app.add_log(format!("[SEND] Connecting to {}...", &peer_str[..peer_str.len().min(16)]));
+                                // Try finding peer in our known RLN peers map
+                                let target_peer = app.known_rln_peers.get(&peer_str)
+                                    .cloned()
+                                    .unwrap_or(peer_str.clone());
+
+                                app.add_log(format!("[SEND] Connecting to {}...", &target_peer[..target_peer.len().min(16)]));
                                 let node_send = Arc::clone(&p2p_node);
                                 let tx_send = tx.clone();
                                 tokio::spawn(async move {
                                     use std::path::PathBuf;
                                     use std::str::FromStr;
-                                    match iroh::EndpointId::from_str(&peer_str) {
+                                    match iroh::EndpointId::from_str(&target_peer) {
                                         Ok(peer_id) => {
                                             let path = PathBuf::from(&path_str);
                                             if let Err(e) = node_send.send_file(peer_id, &path, tx_send.clone()).await {
-                                                let _ = tx_send.send(AppEvent::Log(format!("❌ [SEND] Failed: {}", e))).await;
+                                                let _ = tx_send.send(AppEvent::Log(format!("[ERROR] [SEND] Failed: {}", e))).await;
                                             }
                                         }
                                         Err(e) => {
-                                            let _ = tx_send.send(AppEvent::Log(format!("❌ [SEND] Invalid Peer ID: {}", e))).await;
+                                            let _ = tx_send.send(AppEvent::Log(format!("[ERROR] [SEND] Invalid Peer ID: {}", e))).await;
                                         }
                                     }
                                 });
@@ -206,6 +237,11 @@ async fn main() -> Result<()> {
                         app.topology.insert(k, v);
                     }
                 }
+                AppEvent::RlnPeerDiscovered(peers) => {
+                    for (k, v) in peers {
+                        app.known_rln_peers.insert(k, v);
+                    }
+                }
                 AppEvent::Log(msg) => {
                     app.add_log(msg);
                 }
@@ -222,6 +258,6 @@ async fn main() -> Result<()> {
 
     // 7. Cleanup
     restore_terminal()?;
-    println!("Goodbye! 🛰️");
+    println!("Goodbye!");
     std::process::exit(0);
 }

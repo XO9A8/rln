@@ -18,6 +18,8 @@ pub enum AppEvent {
     TransferProgress(crate::app::TransferState),
     /// LLDP Switch network updates.
     TopologyUpdate(std::collections::HashMap<String, crate::intelligence::topology::SwitchTopology>),
+    /// A new RLN peer announced itself over mDNS. Maps (short_name/hostname, Full_PeerId).
+    RlnPeerDiscovered(std::collections::HashMap<String, String>),
 }
 
 /// Sets up a background thread that listens for terminal keystrokes

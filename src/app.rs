@@ -46,6 +46,12 @@ pub struct App {
     pub active_transfers: Vec<TransferState>,
     /// LLDP-derived network topology grouped by switch name.
     pub topology: HashMap<String, SwitchTopology>,
+    /// Our own Iroh Peer ID (needed so the user can easily share it).
+    pub local_peer_id: String,
+    /// Known RLN peers discovered via mDNS, mapping friendly name or shortcode to full PeerId.
+    pub known_rln_peers: HashMap<String, String>,
+    /// The current scroll offset (in lines) for the system logs view.
+    pub log_scroll_offset: u16,
 }
 
 impl App {
@@ -66,6 +72,9 @@ impl App {
             active_drift_events: Vec::new(),
             active_transfers: Vec::new(),
             topology: HashMap::new(),
+            local_peer_id: String::new(),
+            known_rln_peers: HashMap::new(),
+            log_scroll_offset: 0,
         }
     }
 

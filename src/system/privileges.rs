@@ -41,7 +41,7 @@ pub fn is_privileged() -> bool {
 pub fn print_privilege_guide() {
     eprintln!();
     eprintln!("╔══════════════════════════════════════════════════════════════╗");
-    eprintln!("║         ⚠️  RLN: INSUFFICIENT PRIVILEGES DETECTED            ║");
+    eprintln!("║          [WARNING] RLN: INSUFFICIENT PRIVILEGES DETECTED         ║");
     eprintln!("╠══════════════════════════════════════════════════════════════╣");
     eprintln!("║                                                              ║");
     eprintln!("║  Layer 2 ARP scanning and raw ICMP probing require           ║");

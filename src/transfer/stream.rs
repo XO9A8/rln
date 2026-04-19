@@ -80,7 +80,7 @@ impl P2pNode {
         let node_id = self.endpoint.id();
         let _ = tx
             .send(crate::tui::event::AppEvent::Log(format!(
-                "🚀 [P2P] Node online. ID: {}",
+                "[P2P] Node online. ID: {}",
                 node_id
             )))
             .await;
@@ -92,7 +92,7 @@ impl P2pNode {
                 Err(e) => {
                     let _ = tx
                         .send(crate::tui::event::AppEvent::Log(format!(
-                            "⚠️ [P2P] Rejected connection: {}",
+                            "[WARNING] [P2P] Rejected connection: {}",
                             e
                         )))
                         .await;
@@ -103,7 +103,7 @@ impl P2pNode {
             let tx_clone = tx.clone();
             tokio::spawn(async move {
                 if let Err(e) = handle_incoming_connection(connecting, tx_clone).await {
-                    eprintln!("❌ [P2P] Connection handler error: {}", e);
+                    eprintln!("[ERROR] [P2P] Connection handler error: {}", e);
                 }
             });
         }
@@ -212,7 +212,7 @@ impl P2pNode {
 
         let _ = tx
             .send(crate::tui::event::AppEvent::Log(format!(
-                "✅ [P2P] Sent {} → {}  sha256: {}",
+                "[SUCCESS] [P2P] Sent {} → {}  sha256: {}",
                 filename, peer_id_str, final_hash
             )))
             .await;
@@ -240,7 +240,7 @@ async fn handle_incoming_connection(
 
     let _ = tx
         .send(crate::tui::event::AppEvent::Log(format!(
-            "🤝 [P2P] Authenticated connection from: {}",
+            "[P2P] Authenticated connection from: {}",
             peer_id_str
         )))
         .await;
@@ -323,14 +323,14 @@ async fn handle_incoming_connection(
     if expected_hash == computed_hash {
         let _ = tx
             .send(crate::tui::event::AppEvent::Log(format!(
-                "✅ [P2P] Verified '{}'  sha256: {}",
+                "[SUCCESS] [P2P] Verified '{}'  sha256: {}",
                 filename, computed_hash
             )))
             .await;
     } else {
         let _ = tx
             .send(crate::tui::event::AppEvent::Log(format!(
-                "❌ [P2P] Hash mismatch for '{}'! Expected: {} | Got: {}",
+                "[ERROR] [P2P] Hash mismatch for '{}'! Expected: {} | Got: {}",
                 filename, expected_hash, computed_hash
             )))
             .await;

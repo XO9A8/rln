@@ -145,6 +145,7 @@ rln/
 - **Milestone 3.2: Ratatui Dashboard**
     - [x] Build the main views: Network Topology (LLDP + live scan), Active Transfers, and Event Log.
     - [x] Topology panel now dynamically populated from live ARP, mDNS, and continuous background LLDP scan results (removed mock topologies).
+    - [x] Implement semantic color coding, rounded borders, and scrollable logs for enhanced UX.
 
 ### Phase 4: Intelligence & Data Movement
 *Focus: Advanced inference and high-speed streaming.*

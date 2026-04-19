@@ -13,7 +13,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, BorderType, Clear, List, ListItem, Paragraph, Wrap},
     Frame,
 };
 
@@ -43,17 +43,26 @@ pub fn draw(f: &mut Frame, app: &App) {
 /// Renders the top header bar with device count and status.
 fn draw_header(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let status = if app.is_running { "Active" } else { "Stopping" };
+    let short_peer_id = &app.local_peer_id[..8.min(app.local_peer_id.len())];
     let header_text = format!(
-        " 🛰️  RLN v2.0  |  Known Devices: {}  |  Status: {}",
-        app.known_devices, status
+        " 🛰️  RLN |  Known Devices: {}  |  Status: {}  |  My Peer ID: {}",
+        app.known_devices, status, short_peer_id
     );
     let header = Paragraph::new(header_text)
+        .alignment(Alignment::Center)
         .style(
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         )
-        .block(Block::default().borders(Borders::ALL).title(" RLN Orchestrator "));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Cyan))
+                .title(" RLN Orchestrator ")
+                .title_alignment(Alignment::Center)
+        );
     f.render_widget(header, area);
 }
 
@@ -123,8 +132,13 @@ fn draw_topology(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         }
     }
 
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" Network Topology (LLDP) "));
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Blue))
+            .title(" Network Topology (LLDP) "),
+    );
     f.render_widget(list, area);
 }
 
@@ -165,7 +179,7 @@ fn draw_transfers(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
             // Truncate so the row is guaranteed to fit on one terminal line
             let fname = truncate(&t.filename, 28);
-            let peer  = truncate(&t.peer_id,  16);
+            let peer  = truncate(&t.peer_id,  8);
 
             let line = Line::from(vec![
                 Span::styled("📦 ", Style::default()),
@@ -190,8 +204,13 @@ fn draw_transfers(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         }
     }
 
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" Active P2P Transfers "));
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Green))
+            .title(" Active P2P Transfers "),
+    );
     f.render_widget(list, area);
 }
 
@@ -207,14 +226,11 @@ fn draw_logs(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         .iter()
         .rev()
         .map(|msg| {
-            let color = if msg.contains("[ERROR]") || msg.contains("❌") {
+            let color = if msg.contains("[ERROR]") {
                 Color::Red
-            } else if msg.contains("[WARNING]")
-                || msg.contains("[DEGRADED]")
-                || msg.contains('⚠')
-            {
+            } else if msg.contains("[WARNING]") || msg.contains("[DEGRADED]") {
                 Color::Yellow
-            } else if msg.contains('✅') || msg.contains("[NETWORK]") {
+            } else if msg.contains("[SUCCESS]") || msg.contains("[NETWORK]") {
                 Color::Green
             } else {
                 Color::White
@@ -227,8 +243,15 @@ fn draw_logs(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" System Logs (newest first) "),
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title(if app.log_scroll_offset > 0 {
+                    " System Logs (newest first)  ↓ Scroll "
+                } else {
+                    " System Logs (newest first) "
+                }),
         )
+        .scroll((app.log_scroll_offset, 0))
         .wrap(Wrap { trim: true }); // long lines wrap inside the widget, not outside
 
     f.render_widget(paragraph, area);
@@ -258,33 +281,33 @@ fn draw_send_overlay(f: &mut Frame, app: &App) {
 
     let prompt = Line::from(vec![
         Span::styled(
-            "Peer ID  : ",
-            Style::default().fg(Color::DarkGray),
+            "Peer ID/Name: ",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            "bby3dwtxkbcniifx...   ",
+            "My-Laptop or b09ceb10 ",
             Style::default().fg(Color::DarkGray),
         ),
     ]);
     let example = Line::from(vec![
         Span::styled(
-            "Filepath : ",
-            Style::default().fg(Color::DarkGray),
+            "Filepath    : ",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            "/home/user/documents/file.pdf",
+            "/home/user/doc.pdf",
             Style::default().fg(Color::DarkGray),
         ),
     ]);
     let divider = Line::from("");
     let input_line = Line::from(vec![
         Span::styled(
-            " > ",
+            " 🚀 ",
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             app.input_buffer.clone(),
-            Style::default().fg(Color::White),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
         ),
         // Blinking cursor block
         Span::styled(
@@ -301,6 +324,7 @@ fn draw_send_overlay(f: &mut Frame, app: &App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::Yellow))
                 .title(Span::styled(
                     " 📤 Send File  [Enter = send]  [Esc = cancel] ",

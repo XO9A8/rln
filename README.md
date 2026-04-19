@@ -16,8 +16,8 @@
 - **📈 Stateful Monitoring**: Track network "drift" by comparing current scans against historical SQLite snapshots.
 - **🛡️ Zero-Trust Identity**: Permanent, cryptographic Peer IDs (Ed25519) powered by `iroh`'s built-in key primitives.
 - **🧠 Intelligent Fingerprinting**: Local ML models (via `tract`) identify device types based on network behavior.
-- **🚀 High-Speed Streaming**: Encrypted, resilient file movement using QUIC-based P2P streaming (via `iroh` v0.98).
-- **📊 Modern TUI**: A rich, interactive terminal dashboard built with `ratatui`.
+- **🚀 High-Speed Streaming**: Encrypted, resilient file movement using QUIC-based P2P streaming (via `iroh` v0.98), now supporting mDNS short-code shorthand for Peer IDs!
+- **📊 Modern TUI**: A rich, interactive terminal dashboard built with `ratatui` featuring rounded borders, colored semantic panels, and scrollable system logs.
 
 ---
 
@@ -84,15 +84,16 @@ src/
 
 RLN uses `iroh`'s native Ed25519 key primitives (`iroh::SecretKey` / `iroh::PublicKey`) to generate a unique node identity on first boot. The identity is saved to `data/identity.key` (chmod 600).
 
-In the TUI, your node's `EndpointId` is displayed in the System Logs at startup. Other nodes use this ID to dial you directly for file transfers:
+In the TUI, your node's `EndpointId` is displayed in the System Logs at startup. Other nodes use this ID (or its generated 8-character device shortcode via mDNS if operating on the local network) to dial you directly for file transfers:
 
-```
+```text
 [ID] Peer ID: b09ceb10b3ca3e0aca54dace1998ba495911c5780dcd69b7307fb6bbd945504d
+[P2P] Node online. ID: b09ceb10b3ca3e0aca54dace1998ba495911c5780dcd69b7307fb6bbd945504d
 ```
 
-To send a file, press `s` and type:
-```
-<peer_endpoint_id> <filepath>
+To send a file, press `s` to open the modal overlay, then type either your target's friendly name (`My-Laptop`), shortcode (`b09ceb10`), or full peer ID, and the file path:
+```text
+> b09ceb10 /home/user/doc.pdf
 ```
 
 ---

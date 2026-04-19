@@ -1,33 +1,59 @@
 #![allow(dead_code)]
 use crate::storage::drift::ScannedDevice;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use simple_mdns::async_discovery::ServiceDiscovery;
 use simple_mdns::InstanceInformation;
 use std::time::Duration;
 
-pub async fn run_mdns_scan() -> Result<Vec<ScannedDevice>> {
+/// Initiates the mDNS Service Discovery instance that advertises our node's Peer ID
+/// and listens for other RLN nodes broadcasting `_rln._udp.local`.
+pub fn setup_mdns(peer_id: &str) -> Result<ServiceDiscovery> {
+    let hostname = match gethostname::gethostname().into_string() {
+        Ok(h) => h,
+        Err(_) => "unknown-pc".to_owned(),
+    };
+    let mut info = InstanceInformation::new(hostname);
+    info.attributes.insert("peer_id".to_string(), Some(peer_id.to_string()));
+    
+    ServiceDiscovery::new(info, "_rln._udp.local", 60)
+        .context("Failed to create mDNS Service Discovery")
+}
 
-    let instance_info = InstanceInformation::new("null".to_string());
-    let discovery = ServiceDiscovery::new(instance_info, "_http._tcp.local", 60)?;
-
+/// Runs a single pass to fetch known `_rln._udp.local` services.
+/// It uses the long-lived ServiceDiscovery instance so we continually rebroadcast our presence.
+pub async fn run_mdns_scan_step(discovery: &ServiceDiscovery) -> Result<(Vec<ScannedDevice>, std::collections::HashMap<String, String>)> {
     // Allow time for devices to respond to the multicast query
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     let services = discovery.get_known_services().await;
     let mut devices = Vec::new();
+    let mut rln_peers = std::collections::HashMap::new();
 
     for service in services {
         // Find the first IPv4 address if available
         let ip_addr = service.ip_addresses.iter().find(|ip| ip.is_ipv4());
         
         if let Some(std::net::IpAddr::V4(ipv4)) = ip_addr {
+            let mut name = service.unescaped_instance_name();
+            
+            // If the peer exposes a peer_id as a TXT attribute, inject it into the service name mapped
+            if let Some(Some(peer_id)) = service.attributes.get("peer_id") {
+                let shortcode = format!("{}", &peer_id[..8.min(peer_id.len())]);
+                name = format!("{} [{}]", name, shortcode);
+                
+                // Map the full Peer ID locally for ease of use via shortcuts
+                rln_peers.insert(name.clone(), peer_id.clone());
+                rln_peers.insert(shortcode, peer_id.clone());
+                rln_peers.insert(service.unescaped_instance_name(), peer_id.clone());
+            }
+
             devices.push(ScannedDevice {
                 mac_address: "".to_string(), // mDNS doesn't resolve MAC directly
                 ip_address: ipv4.to_string(),
-                service_name: Some("_http._tcp.local".to_string()),
+                service_name: Some(name),
             });
         }
     }
 
-    Ok(devices)
+    Ok((devices, rln_peers))
 }
