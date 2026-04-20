@@ -100,8 +100,12 @@ impl P2pNode {
 
             let tx_clone = tx.clone();
             tokio::spawn(async move {
-                if let Err(e) = handle_incoming_connection(connecting, tx_clone).await {
-                    eprintln!("[ERROR] [P2P] Connection handler error: {}", e);
+                if let Err(e) = handle_incoming_connection(connecting, tx_clone.clone()).await {
+                    let _ = tx_clone
+                        .send(crate::tui::event::AppEvent::Log(format!(
+                            "[ERROR] [P2P] Connection handler error: {:#}", e
+                        )))
+                        .await;
                 }
             });
         }
@@ -145,7 +149,7 @@ impl P2pNode {
             .await
             .context("Failed to connect to peer")?;
 
-        let (mut send_stream, _recv_stream) = connection
+        let (mut send_stream, mut _recv_stream) = connection
             .open_bi()
             .await
             .context("Failed to open bidirectional stream")?;
@@ -210,6 +214,13 @@ impl P2pNode {
             .finish()
             .context("Failed to finish send stream")?;
 
+        // Wait to receive the acknowledgement byte from the recipient so we don't
+        // drop the QUIC connection before the stream is fully delivered.
+        let mut ack = [0u8; 1];
+        if _recv_stream.read_exact(&mut ack).await.is_err() || ack[0] != 1 {
+            bail!("Transfer rejected or interrupted by peer.");
+        }
+
         let _ = tx
             .send(crate::tui::event::AppEvent::Log(format!(
                 "[SUCCESS] [P2P] Sent {} → {}  sha256: {}",
@@ -245,7 +256,7 @@ async fn handle_incoming_connection(
         )))
         .await;
 
-    let (_send_stream, mut recv_stream) = connection
+    let (mut _send_stream, mut recv_stream) = connection
         .accept_bi()
         .await
         .context("Failed to accept bidirectional stream")?;
@@ -339,6 +350,9 @@ async fn handle_incoming_connection(
                 filename, out_path.display(), computed_hash
             )))
             .await;
+        // Output ACK
+        let _ = _send_stream.write_all(&[1]).await;
+        let _ = _send_stream.finish();
     } else {
         let _ = tx
             .send(crate::tui::event::AppEvent::Log(format!(
@@ -346,6 +360,9 @@ async fn handle_incoming_connection(
                 filename, expected_hash, computed_hash
             )))
             .await;
+        // Output Error NACK 
+        let _ = _send_stream.write_all(&[0]).await;
+        let _ = _send_stream.finish();
     }
 
     // Signal 100% completion
