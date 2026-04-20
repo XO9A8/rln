@@ -48,9 +48,23 @@
 Because RLN relies on raw OSI Layer 2 network sockets to sniff low-level ARP and LLDP frames, it must be run natively on macOS and Windows to avoid virtualization limitations.
 
 #### Windows
-1. Install [Npcap](https://npcap.com/) (the modern Windows packet capture library). **Important:** During installation, select **"Install Npcap in WinPcap API-compatible Mode"**.
-2. Open an Administrative terminal (PowerShell or Command Prompt as Admin).
-3. Clone and run natively:
+
+1. **Install the Runtime:** Download and install [Npcap](https://npcap.com/). 
+   > ⚠️ **Crucial Step:** During the installation wizard, you **must** check the box that says **"Install Npcap in WinPcap API-compatible Mode"**.
+
+2. **Get the Development SDK (For compiling):** To build RLN from source, the Rust compiler needs the Npcap SDK.
+   - Download the **Npcap SDK** (.zip) from the [Npcap downloads page](https://npcap.com/#download).
+   - Extract the `.zip` archive to a folder on your computer.
+
+3. **Link the SDK to Rust:** We need to drop two library files into your Rust toolchain so Cargo can find them. Open a PowerShell window and run this quick script (just change `C:\path\to\npcap-sdk` to match where you extracted the zip):
+   ```powershell
+   $npcap_lib = "C:\path\to\npcap-sdk\Lib\x64"
+   $rust_lib = "$(rustc --print sysroot)\lib\rustlib\x86_64-pc-windows-msvc\lib"
+   Copy-Item "$npcap_lib\Packet.lib" -Destination $rust_lib
+   Copy-Item "$npcap_lib\wpcap.lib" -Destination $rust_lib
+   ```
+
+4. **Run the App:** Open an Administrative terminal (PowerShell or Command Prompt as Admin), because RLN needs low-level network access to scan the LAN:
    ```powershell
    git clone https://github.com/XO9A8/rln.git
    cd rln
@@ -58,7 +72,9 @@ Because RLN relies on raw OSI Layer 2 network sockets to sniff low-level ARP and
    ```
 
 #### macOS
+
 macOS uses the built-in BSD Packet Filter (`BPF`) for network taps. You just need root permissions to bind raw sockets to interface hardware (like `en0`).
+
 1. Open your terminal natively.
 2. Clone and run with `sudo` privileges:
    ```bash
@@ -68,7 +84,9 @@ macOS uses the built-in BSD Packet Filter (`BPF`) for network taps. You just nee
    ```
 
 #### Linux
+
 Linux users can run RLN natively or via Docker (see below).
+
 1. Clone the repository:
    ```bash
    git clone https://github.com/XO9A8/rln.git
@@ -121,6 +139,7 @@ In the TUI, your node's `EndpointId` is displayed in the System Logs at startup.
 ```
 
 To send a file, press `s` to open the modal overlay, then type either your target's friendly name (`My-Laptop`), shortcode (`b09ceb10`), or full peer ID, and the file path:
+
 ```text
 > b09ceb10 /home/user/doc.pdf
 ```

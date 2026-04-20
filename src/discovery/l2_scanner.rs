@@ -20,9 +20,32 @@ use pnet::datalink::{self, NetworkInterface};
 /// Finds the primary active network interface (up, not loopback, has an IP).
 pub fn get_active_interface() -> Result<NetworkInterface> {
     let interfaces = datalink::interfaces();
-    let active_iface = interfaces
-        .into_iter()
-        .find(|iface| iface.is_up() && !iface.is_loopback() && !iface.ips.is_empty());
+    
+    let active_iface = interfaces.into_iter().find(|iface| {
+        if iface.is_loopback() {
+            return false;
+        }
+        
+        #[cfg(target_os = "windows")]
+        {
+            // Loosen the criteria for Windows. Npcap's `is_up()` flag can sometimes report false 
+            // for active WiFi/Ethernet adapters, so we prioritise interfaces with valid IPv4
+            // addresses that are not loopback or link-local.
+            iface.ips.iter().any(|ip| {
+                if let std::net::IpAddr::V4(ipv4) = ip.ip() {
+                    !ipv4.is_loopback() && !ipv4.is_link_local() && !ipv4.is_unspecified()
+                } else {
+                    false
+                }
+            })
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            // Strict `is_up()` check for Linux/macOS to avoid inactive/virtual interfaces.
+            iface.is_up() && !iface.ips.is_empty()
+        }
+    });
 
     match active_iface {
         Some(iface) => Ok(iface),
@@ -259,18 +282,10 @@ pub async fn run_arp_sweep(iface: &NetworkInterface, mode: ScanMode) -> Result<V
         }
 
         let mut discovered = HashMap::new();
-        let start_time = Instant::now();
         let timeout = Duration::from_millis(timeout_ms);
 
         for chunk in target_ips.chunks(chunk_size) {
             for &target_ip in chunk {
-                let mut ethernet_buffer = [0u8; 42];
-                let mut ethernet_packet = MutableEthernetPacket::new(&mut ethernet_buffer).unwrap();
-
-                ethernet_packet.set_destination(MacAddr::broadcast());
-                ethernet_packet.set_source(our_mac);
-                ethernet_packet.set_ethertype(EtherTypes::Arp);
-
                 let mut arp_buffer = [0u8; 28];
                 let mut arp_packet = MutableArpPacket::new(&mut arp_buffer).unwrap();
 
@@ -284,20 +299,30 @@ pub async fn run_arp_sweep(iface: &NetworkInterface, mode: ScanMode) -> Result<V
                 arp_packet.set_target_hw_addr(MacAddr::zero());
                 arp_packet.set_target_proto_addr(target_ip);
 
+                // Pad the Ethernet frame to 60 bytes (Ethernet minimum length required by some Npcap drivers)
+                let mut ethernet_buffer = [0u8; 60];
+                let mut ethernet_packet = MutableEthernetPacket::new(&mut ethernet_buffer).unwrap();
+
+                ethernet_packet.set_destination(MacAddr::broadcast());
+                ethernet_packet.set_source(our_mac);
+                ethernet_packet.set_ethertype(EtherTypes::Arp);
                 ethernet_packet.set_payload(arp_packet.packet_mut());
 
                 tx.send_to(ethernet_packet.packet(), None);
             }
+
+            // Drain RX queue while waiting for the stagger duration, preventing OS buffer overflows
+            let chunk_start = Instant::now();
+            let chunk_stagger = Duration::from_millis(stagger_ms);
             
-            std::thread::sleep(Duration::from_millis(stagger_ms));
-            
-            // Drain RX queue for a short bit after sending chunk
-            while let Ok(packet) = rx.next() {
-                if let Some(eth) = EthernetPacket::new(packet) {
-                    if eth.get_ethertype() == EtherTypes::Arp {
-                        if let Some(arp) = ArpPacket::new(eth.payload()) {
-                            if arp.get_operation() == ArpOperations::Reply && arp.get_target_proto_addr() == our_ip {
-                                discovered.insert(arp.get_sender_proto_addr(), arp.get_sender_hw_addr());
+            while chunk_start.elapsed() < chunk_stagger {
+                if let Ok(packet) = rx.next() {
+                    if let Some(eth) = EthernetPacket::new(packet) {
+                        if eth.get_ethertype() == EtherTypes::Arp {
+                            if let Some(arp) = ArpPacket::new(eth.payload()) {
+                                if arp.get_operation() == ArpOperations::Reply && arp.get_target_proto_addr() == our_ip {
+                                    discovered.insert(arp.get_sender_proto_addr(), arp.get_sender_hw_addr());
+                                }
                             }
                         }
                     }
@@ -305,8 +330,9 @@ pub async fn run_arp_sweep(iface: &NetworkInterface, mode: ScanMode) -> Result<V
             }
         }
         
+        let wait_start = Instant::now();
         // Wait for the remaining timeout to catch late replies
-        while start_time.elapsed() < timeout {
+        while wait_start.elapsed() < timeout {
             if let Ok(packet) = rx.next() {
                 if let Some(eth) = EthernetPacket::new(packet) {
                     if eth.get_ethertype() == EtherTypes::Arp {

@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 use crate::storage::drift::ScannedDevice;
 use anyhow::{Context, Result};
+use simple_mdns::NetworkScope;
+use crate::discovery::l2_scanner;
 use simple_mdns::async_discovery::ServiceDiscovery;
 use simple_mdns::InstanceInformation;
 use std::time::Duration;
@@ -16,7 +18,22 @@ pub fn setup_mdns(peer_id: &str) -> Result<ServiceDiscovery> {
     info.attributes
         .insert("peer_id".to_string(), Some(peer_id.to_string()));
 
-    ServiceDiscovery::new(info, "_rln._udp.local", 60)
+    // On Linux and macOS, the OS multicast routing table handles `0.0.0.0` correctly and 
+    // seamlessly broadcasts across the physical adapter. On Windows, VirtualBox/WSL/VPN adapters
+    // can trap `0.0.0.0` multicast packets. We explicitly bind to the correct physical adapter's IPv4.
+    let mut scope = NetworkScope::V4;
+
+    #[cfg(target_os = "windows")]
+    if let Ok(iface) = l2_scanner::get_active_interface() {
+        for ip in iface.ips {
+            if let std::net::IpAddr::V4(ipv4) = ip.ip() {
+                scope = NetworkScope::V4WithInterface(ipv4);
+                break;
+            }
+        }
+    }
+
+    ServiceDiscovery::new_with_scope(info, "_rln._udp.local", 60, None, scope)
         .context("Failed to create mDNS Service Discovery")
 }
 

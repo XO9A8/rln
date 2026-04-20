@@ -19,18 +19,18 @@ use lan_asin::tui::{
 #[tokio::main]
 async fn main() -> Result<()> {
     // 1. Initial Data Load
-    let db_path = std::env::var("RLN_DATA_DIR")
-        .map(|d| format!("{}/rln_state.db", d))
-        .unwrap_or_else(|_| "data/rln_state.db".to_string());
+    let data_dir = std::env::var("RLN_DATA_DIR").unwrap_or_else(|_| "data".to_string());
+    if let Err(e) = std::fs::create_dir_all(&data_dir) {
+        eprintln!("Failed to create data directory '{}': {}", data_dir, e);
+    }
+    let db_path = format!("{}/rln_state.db", data_dir);
 
     let db = Database::new(&db_path)?;
     let historical_snapshots = db.get_all_snapshots()?;
     let known_devices = historical_snapshots.len();
 
     // 2. Setup Crypto Identity
-    let id_path = std::env::var("RLN_DATA_DIR")
-        .map(|d| format!("{}/identity.key", d))
-        .unwrap_or_else(|_| "data/identity.key".to_string());
+    let id_path = format!("{}/identity.key", data_dir);
 
     let identity = NodeIdentity::load_or_generate(&id_path)?;
     let p2p_node = Arc::new(P2pNode::new(&identity.secret_bytes()).await?);
