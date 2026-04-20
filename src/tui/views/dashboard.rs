@@ -43,10 +43,9 @@ pub fn draw(f: &mut Frame, app: &App) {
 /// Renders the top header bar with device count and status.
 fn draw_header(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let status = if app.is_running { "Active" } else { "Stopping" };
-    let short_peer_id = &app.local_peer_id[..8.min(app.local_peer_id.len())];
     let header_text = format!(
-        " 🛰️  RLN |  Known Devices: {}  |  Status: {}  |  My Peer ID: {}",
-        app.known_devices, status, short_peer_id
+        " 🛰️  RLN | Known: {} | Status: {} | ID: {}",
+        app.known_devices, status, app.local_peer_id
     );
     let header = Paragraph::new(header_text)
         .alignment(Alignment::Center)

@@ -2,6 +2,7 @@
 use crate::storage::drift::ScannedDevice;
 use anyhow::{Context, Result};
 use simple_mdns::NetworkScope;
+#[cfg(target_os = "windows")]
 use crate::discovery::l2_scanner;
 use simple_mdns::async_discovery::ServiceDiscovery;
 use simple_mdns::InstanceInformation;
@@ -21,6 +22,7 @@ pub fn setup_mdns(peer_id: &str) -> Result<ServiceDiscovery> {
     // On Linux and macOS, the OS multicast routing table handles `0.0.0.0` correctly and 
     // seamlessly broadcasts across the physical adapter. On Windows, VirtualBox/WSL/VPN adapters
     // can trap `0.0.0.0` multicast packets. We explicitly bind to the correct physical adapter's IPv4.
+    #[allow(unused_mut)]
     let mut scope = NetworkScope::V4;
 
     #[cfg(target_os = "windows")]
