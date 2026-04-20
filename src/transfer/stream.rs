@@ -25,6 +25,7 @@
 use anyhow::{bail, Context, Result};
 use iroh::{endpoint::presets, Endpoint, EndpointId, SecretKey};
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
 
 /// The ALPN identifier for the RLN protocol.
 /// Only peers advertising this identifier will be accepted.
@@ -270,6 +271,19 @@ async fn handle_incoming_connection(
         bail!("Peer sent zero-length file: {}", filename);
     }
 
+    // --- Ensure downloads directory exists ---
+    let data_dir = std::env::var("RLN_DATA_DIR").unwrap_or_else(|_| "data".to_string());
+    let downloads_dir = std::path::Path::new(&data_dir).join("downloads");
+    tokio::fs::create_dir_all(&downloads_dir).await.context("Failed to create downloads directory")?;
+    
+    let safe_filename = std::path::Path::new(&filename)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown_file");
+        
+    let out_path = downloads_dir.join(safe_filename);
+    let mut out_file = tokio::fs::File::create(&out_path).await.context("Failed to create output file")?;
+
     // --- Read file chunks ---
     let mut hasher = HashVerification::new();
     let mut received_bytes = 0u64;
@@ -283,6 +297,7 @@ async fn handle_incoming_connection(
         match recv_stream.read_exact(&mut buffer[..to_read]).await {
             Ok(_) => {
                 hasher.update(&buffer[..to_read]);
+                out_file.write_all(&buffer[..to_read]).await.context("Failed to write to local file")?;
                 received_bytes += to_read as u64;
 
                 if last_ui_update.elapsed().as_millis() > 250 {
@@ -320,8 +335,8 @@ async fn handle_incoming_connection(
     if expected_hash == computed_hash {
         let _ = tx
             .send(crate::tui::event::AppEvent::Log(format!(
-                "[SUCCESS] [P2P] Verified '{}'  sha256: {}",
-                filename, computed_hash
+                "[SUCCESS] [P2P] Verified '{}' saved to '{}'  sha256: {}",
+                filename, out_path.display(), computed_hash
             )))
             .await;
     } else {

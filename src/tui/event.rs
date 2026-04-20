@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 use crate::storage::drift::DriftEvent;
-use crossterm::event::{self, Event as CrosstermEvent, KeyEvent};
+use crossterm::event::{self, Event as CrosstermEvent, KeyEvent, KeyEventKind};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -37,8 +37,10 @@ pub fn setup_key_listener(tx: mpsc::Sender<AppEvent>, tick_rate: Duration) {
             // Poll for crossterm events (keyboard inputs)
             if event::poll(timeout).unwrap_or(false) {
                 if let Ok(CrosstermEvent::Key(key)) = event::read() {
-                    if tx.send(AppEvent::Key(key)).await.is_err() {
-                        break; // Channel closed
+                    if key.kind == KeyEventKind::Press {
+                        if tx.send(AppEvent::Key(key)).await.is_err() {
+                            break; // Channel closed
+                        }
                     }
                 }
             }
